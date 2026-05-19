@@ -4,6 +4,8 @@ import os
 import json
 from typing import Any, Dict, Optional
 
+from src.common.errors import ConfigurationError
+
 
 class Config:
     def __init__(self, config_path: Optional[str] = None):
@@ -26,11 +28,24 @@ class Config:
     def _set_nested(self, key: str, value: Any) -> None:
         parts = key.split(".")
         current = self._data
+        path_parts = []
         for part in parts[:-1]:
+            path_parts.append(part)
             if part not in current:
                 current[part] = {}
+            elif not isinstance(current[part], dict):
+                path = ".".join(path_parts)
+                raise ConfigurationError(
+                    f"Cannot create nested key '{key}': '{path}' is already a scalar value"
+                )
             current = current[part]
-        current[parts[-1]] = value
+
+        leaf = parts[-1]
+        if leaf in current and isinstance(current[leaf], dict) and not isinstance(value, dict):
+            raise ConfigurationError(
+                f"Cannot replace config branch '{key}' with scalar value"
+            )
+        current[leaf] = value
 
     def get(self, key: str, default: Any = None) -> Any:
         parts = key.split(".")

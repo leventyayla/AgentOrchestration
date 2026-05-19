@@ -1,5 +1,6 @@
 import pytest
 from src.common.config import Config
+from src.common.errors import ConfigurationError
 
 
 class TestConfig:
@@ -31,6 +32,25 @@ class TestConfig:
         data = config.to_dict()
         assert data["key1"] == "value1"
         assert data["key2"] == "value2"
+
+    def test_env_scalar_cannot_replace_existing_branch(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"app": {"name": "test", "port": 8080}}')
+        monkeypatch.setenv("AO_APP", "production")
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            Config(str(config_file))
+
+        assert "Cannot replace config branch 'app' with scalar value" in str(exc_info.value)
+
+    def test_nested_key_cannot_extend_existing_scalar(self):
+        config = Config()
+        config.set("app", "production")
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            config.set("app.name", "test")
+
+        assert "'app' is already a scalar value" in str(exc_info.value)
 
 # 2019-02-01T18:58:35 update
 
