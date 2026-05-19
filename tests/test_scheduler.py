@@ -36,6 +36,67 @@ class TestTaskScheduler:
         task = asyncio.run(self.scheduler.dequeue())
         assert self.scheduler.fail(task["id"])
 
+    def test_retry_preserves_task_id_and_stops_after_terminal_state(self):
+        import asyncio
+
+        task_id = self.scheduler.enqueue({"type": "test"})
+        task = asyncio.run(self.scheduler.dequeue())
+
+        assert task is not None
+        assert task["id"] == task_id
+        assert self.scheduler.fail(task_id)
+
+        retry_task = asyncio.run(self.scheduler.dequeue())
+        assert retry_task is not None
+        assert retry_task["id"] == task_id
+        assert self.scheduler.complete(task_id)
+        outcome = self.scheduler.terminal_outcome(task_id)
+        assert outcome is not None
+        assert outcome["state"] == "completed"
+
+        # A stale retry/worker callback after completion must not requeue or
+        # overwrite the durable terminal outcome.
+        assert not self.scheduler.fail(task_id)
+        completed_outcome = self.scheduler.terminal_outcome(task_id)
+        assert completed_outcome is not None
+        assert completed_outcome["state"] == "completed"
+        assert asyncio.run(self.scheduler.dequeue()) is None
+
+    def test_max_retries_records_single_terminal_failure(self):
+        import asyncio
+
+        task_id = self.scheduler.enqueue({"type": "test"})
+
+        for _ in range(2):
+            task = asyncio.run(self.scheduler.dequeue())
+            assert task is not None
+            assert task["id"] == task_id
+            assert self.scheduler.fail(task_id)
+
+        task = asyncio.run(self.scheduler.dequeue())
+        assert task is not None
+        assert task["id"] == task_id
+        assert not self.scheduler.fail(task_id)
+        failed_outcome = self.scheduler.terminal_outcome(task_id)
+        assert failed_outcome is not None
+        assert failed_outcome["state"] == "failed"
+
+        # Duplicate failure after the terminal state is stale and rejected.
+        assert not self.scheduler.fail(task_id)
+        failed_outcome = self.scheduler.terminal_outcome(task_id)
+        assert failed_outcome is not None
+        assert failed_outcome["state"] == "failed"
+
+    def test_scheduled_task_survives_until_due_without_reassigning_id(self):
+        import asyncio
+
+        task_id = self.scheduler.schedule({"type": "scheduled"}, delay=0)
+        task = asyncio.run(self.scheduler.dequeue())
+
+        assert task is not None
+        assert task["id"] == task_id
+        assert task["type"] == "scheduled"
+
 # 2019-01-09T19:07:03 update
 
 # 2019-02-18T12:30:02 update

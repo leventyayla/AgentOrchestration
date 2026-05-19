@@ -31,55 +31,129 @@ class PriorityQueue:
 
 
 class TaskScheduler:
+    TERMINAL_STATES = {"completed", "failed", "cancelled"}
+
     def __init__(self):
         self._queues: Dict[str, PriorityQueue] = {}
-        self._scheduled: Dict[str, float] = {}
+        self._scheduled: Dict[str, Dict] = {}
         self._in_flight: Dict[str, Dict] = {}
+        self._terminal: Dict[str, Dict] = {}
         self._max_retries = 3
 
-    def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
-        task_id = str(uuid4())
-        task["id"] = task_id
-        task["enqueued_at"] = time.time()
-        task["retries"] = 0
-
+    def _ensure_queue(self, queue: str) -> PriorityQueue:
         if queue not in self._queues:
             self._queues[queue] = PriorityQueue()
-        self._queues[queue].push(task, priority)
+        return self._queues[queue]
+
+    def _record_terminal(self, task_id: str, state: str, task: Optional[Dict]) -> bool:
+        """Persist one durable terminal outcome before any follow-up side effect.
+
+        Retry and duplicate completion paths can be invoked by workers, timeout
+        handlers, or schedulers after another path has already finalized the
+        same task.  The first terminal transition wins; later calls are stale and
+        are rejected so they cannot requeue work or overwrite newer state.
+        """
+        if task_id in self._terminal:
+            return False
+
+        now = time.time()
+        outcome = {
+            "id": task_id,
+            "state": state,
+            "finished_at": now,
+            "retries": (task or {}).get("retries", 0),
+        }
+        if task:
+            task["status"] = state
+            task["finished_at"] = now
+            outcome["task"] = dict(task)
+        self._terminal[task_id] = outcome
+        return True
+
+    def _push_task(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
+        task_id = task["id"]
+        if task_id in self._terminal:
+            return task_id
+
+        task["queue"] = queue
+        task["priority"] = priority
+        self._ensure_queue(queue).push(task, priority)
         return task_id
 
-    def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
-        task_id = str(uuid4())
+    def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
+        task_id = task.get("id") or str(uuid4())
+        if task_id in self._terminal:
+            return task_id
+
         task["id"] = task_id
-        self._scheduled[task_id] = time.time() + delay
+        task["enqueued_at"] = time.time()
+        task.setdefault("retries", 0)
+        task["status"] = "queued"
+        return self._push_task(task, queue, priority)
+
+    def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
+        task_id = task.get("id") or str(uuid4())
+        if task_id in self._terminal:
+            return task_id
+
+        task["id"] = task_id
+        task.setdefault("retries", 0)
+        task["status"] = "scheduled"
+        self._scheduled[task_id] = {
+            "due_at": time.time() + delay,
+            "task": task,
+            "queue": queue,
+            "priority": priority,
+        }
         return task_id
 
     async def dequeue(self, queue: str = "default", timeout: float = 1.0) -> Optional[Dict]:
         now = time.time()
-        expired = [tid for tid, t in self._scheduled.items() if t <= now]
+        expired = [tid for tid, item in self._scheduled.items() if item["due_at"] <= now]
         for tid in expired:
-            task = self._scheduled.pop(tid)
-            if task:
-                self.enqueue(task, queue)
+            item = self._scheduled.pop(tid)
+            if tid not in self._terminal:
+                self._push_task(item["task"], item["queue"], item["priority"])
 
         if queue in self._queues and len(self._queues[queue]) > 0:
             task = self._queues[queue].pop()
-            if task:
+            if task and task["id"] not in self._terminal:
+                task["status"] = "running"
                 self._in_flight[task["id"]] = task
                 return task
         return None
 
     def complete(self, task_id: str) -> bool:
-        return self._in_flight.pop(task_id, None) is not None
+        task = self._in_flight.pop(task_id, None)
+        if task is None or task_id in self._terminal:
+            return False
+        return self._record_terminal(task_id, "completed", task)
+
+    def cancel(self, task_id: str) -> bool:
+        task = self._in_flight.pop(task_id, None)
+        scheduled = self._scheduled.pop(task_id, None)
+        task = task or (scheduled or {}).get("task")
+        return self._record_terminal(task_id, "cancelled", task)
 
     def fail(self, task_id: str, queue: str = "default") -> bool:
+        if task_id in self._terminal:
+            return False
+
         task = self._in_flight.pop(task_id, None)
-        if task:
-            task["retries"] += 1
-            if task["retries"] < self._max_retries:
-                self.enqueue(task, queue, priority=task.get("priority", 0))
-                return True
-        return False
+        if not task:
+            return False
+
+        task["retries"] += 1
+        if task["retries"] >= self._max_retries:
+            self._record_terminal(task_id, "failed", task)
+            return False
+
+        task["status"] = "retrying"
+        self._push_task(task, queue, priority=task.get("priority", 0))
+        return True
+
+    def terminal_outcome(self, task_id: str) -> Optional[Dict]:
+        return self._terminal.get(task_id)
 
 # 2019-04-25T08:37:12 update
 
