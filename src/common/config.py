@@ -2,7 +2,9 @@
 
 import os
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from src.common.errors import ConfigurationError
 
 
 class Config:
@@ -18,10 +20,24 @@ class Config:
 
     def _load_env_overrides(self) -> None:
         prefix = "AO_"
+        env_overrides: Dict[str, List[str]] = {}
+
         for key, value in os.environ.items():
             if key.startswith(prefix):
                 config_key = key[len(prefix):].lower().replace("_", ".")
-                self._set_nested(config_key, value)
+                env_overrides.setdefault(config_key, []).append(key)
+
+        for config_key, keys in sorted(env_overrides.items()):
+            unique_keys = sorted(set(keys))
+            if len(unique_keys) > 1:
+                joined_keys = ", ".join(unique_keys)
+                raise ConfigurationError(
+                    "case-colliding environment overrides for "
+                    f"'{config_key}': {joined_keys}"
+                )
+
+        for config_key, keys in sorted(env_overrides.items()):
+            self._set_nested(config_key, os.environ[keys[0]])
 
     def _set_nested(self, key: str, value: Any) -> None:
         parts = key.split(".")

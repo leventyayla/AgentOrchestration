@@ -1,5 +1,6 @@
 import pytest
 from src.common.config import Config
+from src.common.errors import ConfigurationError
 
 
 class TestConfig:
@@ -31,6 +32,28 @@ class TestConfig:
         data = config.to_dict()
         assert data["key1"] == "value1"
         assert data["key2"] == "value2"
+
+    def test_env_overrides_detect_case_colliding_keys(self, monkeypatch):
+        monkeypatch.setenv("AO_APP_PORT", "8080")
+        monkeypatch.setenv("AO_app_port", "9090")
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            Config()
+
+        message = str(exc_info.value)
+        assert "case-colliding environment overrides" in message
+        assert "app.port" in message
+        assert "AO_APP_PORT" in message
+        assert "AO_app_port" in message
+
+    def test_env_override_loading_is_deterministic(self, monkeypatch):
+        monkeypatch.setenv("AO_DATABASE_HOST", "localhost")
+        monkeypatch.setenv("AO_APP_PORT", "8080")
+
+        config = Config()
+
+        assert config.get("app.port") == "8080"
+        assert config.get("database.host") == "localhost"
 
 # 2019-02-01T18:58:35 update
 
