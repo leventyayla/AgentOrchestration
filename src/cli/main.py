@@ -4,6 +4,7 @@
 import argparse
 import sys
 
+from src.common.errors import ConfigurationError
 from src.common.feature_flags import validate_feature_flag_rollout_from_files
 from src.common.logging import configure_logging
 
@@ -55,8 +56,11 @@ def cli():
             parser.error(
                 "deploy feature-flag validation requires both --feature-flag-manifest and --rendered-config")
         if args.feature_flag_manifest:
-            validate_feature_flag_rollout_from_files(
-                args.rendered_config, args.feature_flag_manifest)
+            try:
+                validate_feature_flag_rollout_from_files(
+                    args.rendered_config, args.feature_flag_manifest)
+            except ConfigurationError as exc:
+                parser.error(str(exc))
         print(f"Deploying agent from manifest: {args.manifest}")
     elif args.command == "status":
         print("Checking agent status...")

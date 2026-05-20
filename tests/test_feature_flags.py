@@ -146,3 +146,16 @@ class TestFeatureFlagRolloutValidation:
             )
 
         assert "must document a default value" in str(exc_info.value)
+
+    def test_malformed_manifest_entries_raise_configuration_error(self):
+        with pytest.raises(ConfigurationError, match="entries must be objects"):
+            FeatureFlagManifest.from_dict(
+                {
+                    "services": ["scheduler", "worker"],
+                    "flags": ["dispatch_v2"],
+                }
+            )
+
+    def test_manifest_root_must_be_object(self):
+        with pytest.raises(ConfigurationError, match="manifest must be an object"):
+            FeatureFlagManifest.from_dict(["not", "an", "object"])  # type: ignore[arg-type]

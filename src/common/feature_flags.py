@@ -31,6 +31,9 @@ class RequiredFeatureFlag:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any], default_services: Sequence[str]) -> "RequiredFeatureFlag":
+        if not isinstance(raw, Mapping):
+            raise ConfigurationError(
+                "feature flag manifest entries must be objects")
         name = raw.get("name")
         owner = raw.get("owner")
         if not isinstance(name, str) or not name:
@@ -69,6 +72,8 @@ class FeatureFlagManifest:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "FeatureFlagManifest":
+        if not isinstance(raw, Mapping):
+            raise ConfigurationError("feature flag manifest must be an object")
         services = raw.get("services", ("scheduler", "worker"))
         if not isinstance(services, Sequence) or isinstance(services, (str, bytes)) or not services:
             raise ConfigurationError(
