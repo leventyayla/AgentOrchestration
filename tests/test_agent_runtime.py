@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from src.agent.runtime import AgentRuntime, RuntimeState
 
@@ -56,3 +57,38 @@ def test_start_failure_persists_crash_before_cleanup(tmp_path, monkeypatch):
     assert state["terminal"] is True
     assert "spawn failed" in state["error"]
     assert not runtime.temp_dir("agent-3").exists()
+
+
+def test_stop_on_already_exited_process_marks_crashed_and_cleans_temp_dir(tmp_path):
+    runtime = AgentRuntime(runtime_path=str(tmp_path))
+
+    assert runtime.start("agent-4", [sys.executable, "-c", "raise SystemExit(3)"])
+    proc = runtime._processes["agent-4"]
+    proc.wait(timeout=5)
+    temp_dir = runtime.temp_dir("agent-4")
+    (temp_dir / "orphan.tmp").write_text("stale", encoding="utf-8")
+
+    assert runtime.stop("agent-4", timeout=1) is False
+
+    state = json.loads(runtime.state_file("agent-4").read_text(encoding="utf-8"))
+    assert state["state"] == RuntimeState.CRASHED.value
+    assert state["returncode"] == 3
+    assert not temp_dir.exists()
+
+
+def test_transition_exposes_state_only_after_durable_write(tmp_path, monkeypatch):
+    runtime = AgentRuntime(runtime_path=str(tmp_path))
+    runtime._states["agent-5"] = RuntimeState.RUNNING
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+
+    try:
+        runtime._transition("agent-5", RuntimeState.STOPPED)
+    except OSError:
+        pass
+
+    assert runtime._states["agent-5"] == RuntimeState.RUNNING
+

@@ -79,6 +79,8 @@ class AgentRuntime:
     def stop(self, agent_id: str, timeout: int = 10) -> bool:
         proc = self._processes.get(agent_id)
         if not proc or proc.poll() is not None:
+            if proc and self._states.get(agent_id) == RuntimeState.RUNNING:
+                self._transition(agent_id, RuntimeState.CRASHED, returncode=proc.returncode)
             if self._states.get(agent_id) in _TERMINAL_STATES:
                 self._cleanup_temp_dir(agent_id)
             return False
@@ -121,7 +123,6 @@ class AgentRuntime:
         return run_dir
 
     def _transition(self, agent_id: str, state: RuntimeState, **details) -> None:
-        self._states[agent_id] = state
         payload = {
             "agent_id": agent_id,
             "state": state.value,
@@ -135,6 +136,7 @@ class AgentRuntime:
         tmp_file = state_file.with_suffix(".json.tmp")
         tmp_file.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         os.replace(tmp_file, state_file)
+        self._states[agent_id] = state
 
     def _cleanup_temp_dir(self, agent_id: str) -> None:
         run_dir = self.temp_dir(agent_id)
