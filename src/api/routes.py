@@ -1,22 +1,30 @@
 """API route definitions."""
 
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Optional
+from fastapi import APIRouter, HTTPException, Request
+from typing import Dict, Optional
 
 from src.agent import AgentRegistry, AgentStatus
+from src.api.artifacts import ArtifactTooLarge, artifact_store
 
 router = APIRouter()
 registry = AgentRegistry()
 
 
 @router.get("/agents")
-async def list_agents(status: Optional[str] = None, group: Optional[str] = None):
+async def list_agents(
+    status: Optional[str] = None,
+    group: Optional[str] = None,
+):
     status_filter = AgentStatus(status) if status else None
     return {"agents": registry.list(status=status_filter, group=group)}
 
 
 @router.post("/agents")
-async def register_agent(name: str, agent_type: str, config: Optional[Dict] = None):
+async def register_agent(
+    name: str,
+    agent_type: str,
+    config: Optional[Dict] = None,
+):
     agent_id = registry.register(name, agent_type, config)
     return {"agent_id": agent_id, "status": "registered"}
 
@@ -34,6 +42,39 @@ async def delete_agent(agent_id: str):
     if not registry.delete(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "deleted"}
+
+
+@router.post("/artifacts/{artifact_id}")
+async def upload_artifact(
+    artifact_id: str,
+    request: Request,
+    max_body_size: Optional[int] = None,
+):
+    body = await request.body()
+    try:
+        metadata = artifact_store.upload(
+            artifact_id,
+            body,
+            max_body_size=max_body_size,
+        )
+    except ArtifactTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": "artifact_too_large",
+                "size": exc.size,
+                "limit": exc.limit,
+            },
+        ) from exc
+    return {"status": "uploaded", **metadata}
+
+
+@router.get("/artifacts/{artifact_id}")
+async def get_artifact_metadata(artifact_id: str):
+    metadata = artifact_store.metadata(artifact_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return metadata
 
 
 @router.post("/agents/{agent_id}/start")
