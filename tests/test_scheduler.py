@@ -1,5 +1,5 @@
 import pytest
-from src.orchestrator.scheduler import TaskScheduler
+from src.orchestrator.scheduler import PriorityQueue, TaskScheduler
 
 
 class TestTaskScheduler:
@@ -35,6 +35,38 @@ class TestTaskScheduler:
         import asyncio
         task = asyncio.run(self.scheduler.dequeue())
         assert self.scheduler.fail(task["id"])
+
+    def test_enqueue_releases_capacity_and_restores_task_on_push_failure(self, monkeypatch):
+        task = {"type": "test"}
+
+        def fail_push(*args, **kwargs):
+            raise RuntimeError("storage unavailable")
+
+        self.scheduler._queues["default"] = PriorityQueue()
+        monkeypatch.setattr(self.scheduler._queues["default"], "push", fail_push)
+
+        with pytest.raises(RuntimeError, match="storage unavailable"):
+            self.scheduler.enqueue(task)
+
+        assert task == {"type": "test"}
+        assert self.scheduler._queue_reservations == {}
+        assert self.scheduler.audit_records[-1]["action"] == "enqueue_rolled_back"
+        assert self.scheduler.audit_records[-1]["reason"] == "queue_push_failed"
+
+    def test_capacity_rejection_preserves_in_flight_retry_state(self):
+        scheduler = TaskScheduler(max_queue_size=1)
+        import asyncio
+
+        scheduler.enqueue({"type": "first"})
+        task = asyncio.run(scheduler.dequeue())
+        assert task is not None
+        task_id = task["id"]
+        scheduler.enqueue({"type": "capacity-filler"})
+
+        assert scheduler.fail(task_id) is False
+        assert scheduler._in_flight[task_id] is task
+        assert scheduler._queue_reservations["default"] == 1
+        assert scheduler.audit_records[-1]["action"] == "retry_deferred"
 
 # 2019-01-09T19:07:03 update
 

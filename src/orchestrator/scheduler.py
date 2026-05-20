@@ -2,9 +2,16 @@
 
 import asyncio
 import heapq
+import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+
+class QueueCapacityError(RuntimeError):
+    """Raised when a task cannot be durably reserved in a queue."""
 
 
 class PriorityQueue:
@@ -31,26 +38,85 @@ class PriorityQueue:
 
 
 class TaskScheduler:
-    def __init__(self):
+    def __init__(self, max_queue_size: Optional[int] = None):
         self._queues: Dict[str, PriorityQueue] = {}
         self._scheduled: Dict[str, float] = {}
         self._in_flight: Dict[str, Dict] = {}
         self._max_retries = 3
+        self._max_queue_size = max_queue_size
+        self._queue_reservations: Dict[str, int] = {}
+        self._audit_records: List[Dict[str, Any]] = []
+
+    @property
+    def audit_records(self) -> List[Dict[str, Any]]:
+        return list(self._audit_records)
+
+    def _record_decision(
+        self, action: str, queue: str, task_id: Optional[str], reason: str
+    ) -> None:
+        record = {
+            "action": action,
+            "queue": queue,
+            "task_id": task_id,
+            "reason": reason,
+            "timestamp": time.time(),
+        }
+        self._audit_records.append(record)
+        logger.info("scheduler queue decision: %s", record)
+
+    def _queue_is_full(self, queue: str) -> bool:
+        if self._max_queue_size is None:
+            return False
+        return self._queue_reservations.get(queue, 0) >= self._max_queue_size
+
+    def _reserve_capacity(self, queue: str, task_id: str) -> None:
+        if self._queue_is_full(queue):
+            self._record_decision("enqueue_rejected", queue, task_id, "queue_capacity_exhausted")
+            raise QueueCapacityError(f"queue {queue!r} is at capacity")
+        self._queue_reservations[queue] = self._queue_reservations.get(queue, 0) + 1
+
+    def _release_capacity(self, queue: str) -> None:
+        current = self._queue_reservations.get(queue, 0)
+        if current <= 1:
+            self._queue_reservations.pop(queue, None)
+        else:
+            self._queue_reservations[queue] = current - 1
 
     def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
-        task_id = str(uuid4())
-        task["id"] = task_id
-        task["enqueued_at"] = time.time()
-        task["retries"] = 0
+        task_id = task.get("id") or str(uuid4())
+        previous_values = {
+            key: task.get(key) for key in ("id", "enqueued_at", "retries", "priority")
+        }
+        missing_keys = {key for key in previous_values if key not in task}
 
-        if queue not in self._queues:
-            self._queues[queue] = PriorityQueue()
-        self._queues[queue].push(task, priority)
+        self._reserve_capacity(queue, task_id)
+        try:
+            task["id"] = task_id
+            task["enqueued_at"] = time.time()
+            task["retries"] = task.get("retries", 0)
+            task["priority"] = priority
+
+            if queue not in self._queues:
+                self._queues[queue] = PriorityQueue()
+            self._queues[queue].push(task, priority)
+        except Exception:
+            self._release_capacity(queue)
+            for key, value in previous_values.items():
+                if key in missing_keys:
+                    task.pop(key, None)
+                else:
+                    task[key] = value
+            self._record_decision("enqueue_rolled_back", queue, task_id, "queue_push_failed")
+            raise
+
+        self._record_decision("enqueue_committed", queue, task_id, "capacity_reserved")
         return task_id
 
     def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
         task["id"] = task_id
+        task["queue"] = queue
+        task["priority"] = priority
         self._scheduled[task_id] = time.time() + delay
         return task_id
 
@@ -60,11 +126,12 @@ class TaskScheduler:
         for tid in expired:
             task = self._scheduled.pop(tid)
             if task:
-                self.enqueue(task, queue)
+                self.enqueue(task, task.get("queue", queue), priority=task.get("priority", 0))
 
         if queue in self._queues and len(self._queues[queue]) > 0:
             task = self._queues[queue].pop()
             if task:
+                self._release_capacity(queue)
                 self._in_flight[task["id"]] = task
                 return task
         return None
@@ -73,11 +140,18 @@ class TaskScheduler:
         return self._in_flight.pop(task_id, None) is not None
 
     def fail(self, task_id: str, queue: str = "default") -> bool:
-        task = self._in_flight.pop(task_id, None)
+        task = self._in_flight.get(task_id)
         if task:
             task["retries"] += 1
             if task["retries"] < self._max_retries:
-                self.enqueue(task, queue, priority=task.get("priority", 0))
+                try:
+                    self.enqueue(task, queue, priority=task.get("priority", 0))
+                except Exception:
+                    self._record_decision(
+                        "retry_deferred", queue, task_id, "enqueue_transaction_failed"
+                    )
+                    return False
+                self._in_flight.pop(task_id, None)
                 return True
         return False
 
