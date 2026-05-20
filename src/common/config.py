@@ -6,6 +6,18 @@ from typing import Any, Dict, Optional
 
 
 class Config:
+    """Application configuration loader.
+
+    Environment overrides are intentionally limited to documented config keys.
+    Runtime-only variables such as ``AO_AGENT_ID`` are used by subprocesses and
+    must not be copied into the generic configuration snapshot.
+    """
+
+    ENV_OVERRIDE_KEYS = {
+        "AO_API_URL": "api.url",
+        "AO_API_KEY": "api.key",
+    }
+
     def __init__(self, config_path: Optional[str] = None):
         self._data: Dict[str, Any] = {}
         if config_path:
@@ -17,11 +29,9 @@ class Config:
             self._data = json.load(f)
 
     def _load_env_overrides(self) -> None:
-        prefix = "AO_"
-        for key, value in os.environ.items():
-            if key.startswith(prefix):
-                config_key = key[len(prefix):].lower().replace("_", ".")
-                self._set_nested(config_key, value)
+        for env_key, config_key in self.ENV_OVERRIDE_KEYS.items():
+            if env_key in os.environ:
+                self._set_nested(config_key, os.environ[env_key])
 
     def _set_nested(self, key: str, value: Any) -> None:
         parts = key.split(".")

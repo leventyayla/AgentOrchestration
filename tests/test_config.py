@@ -32,6 +32,32 @@ class TestConfig:
         assert data["key1"] == "value1"
         assert data["key2"] == "value2"
 
+    def test_loads_only_documented_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("AO_API_URL", "https://orchestrator.example.test")
+        monkeypatch.setenv("AO_API_KEY", "test-api-key")
+        monkeypatch.setenv("AO_AGENT_ID", "runtime-agent-123")
+        monkeypatch.setenv("AO_UNDOCUMENTED_SETTING", "should-not-load")
+
+        config = Config()
+
+        assert config.get("api.url") == "https://orchestrator.example.test"
+        assert config.get("api.key") == "test-api-key"
+        assert config.get("agent.id") is None
+        assert config.get("undocumented.setting") is None
+        assert "agent" not in config.to_dict()
+        assert "undocumented" not in config.to_dict()
+
+    def test_runtime_agent_id_env_does_not_leak_into_loaded_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AO_AGENT_ID", "runtime-agent-123")
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"app": {"name": "test"}}')
+
+        config = Config(str(config_file))
+
+        assert config.get("app.name") == "test"
+        assert config.get("agent.id") is None
+        assert config.to_dict() == {"app": {"name": "test"}}
+
 # 2019-02-01T18:58:35 update
 
 # 2019-07-31T13:45:15 update
