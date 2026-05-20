@@ -2,13 +2,31 @@
 
 import argparse
 import sys
+from typing import NoReturn
 
-from src.common.config import Config
 from src.common.logging import configure_logging
 
 
+def output_data(message: str) -> None:
+    """Write machine-consumable CLI output to stdout."""
+    print(message, file=sys.stdout)
+
+
+def output_error(message: str) -> None:
+    """Write validation and error output to stderr."""
+    print(message, file=sys.stderr)
+
+
+class AgentOrchestratorParser(argparse.ArgumentParser):
+    """Argument parser that keeps validation output off stdout."""
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {message}\n")
+
+
 def cli():
-    parser = argparse.ArgumentParser(description="Agent Orchestrator CLI")
+    parser = AgentOrchestratorParser(description="Agent Orchestrator CLI")
     parser.add_argument("--config", "-c", help="Path to config file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
@@ -35,15 +53,16 @@ def cli():
         configure_logging("INFO")
 
     if args.command == "init":
-        print(f"Initializing project: {args.name}")
+        output_data(f"Initializing project: {args.name}")
     elif args.command == "deploy":
-        print(f"Deploying agent from manifest: {args.manifest}")
+        output_data(f"Deploying agent from manifest: {args.manifest}")
     elif args.command == "status":
-        print("Checking agent status...")
+        output_data("Checking agent status...")
     elif args.command == "logs":
-        print(f"Fetching logs for agent: {args.agent_id}")
+        output_data(f"Fetching logs for agent: {args.agent_id}")
     else:
-        parser.print_help()
+        output_error("error: command is required")
+        parser.print_help(file=sys.stderr)
         sys.exit(1)
 
 
