@@ -65,6 +65,7 @@ class TestTaskScheduler:
 
         assert scheduler.fail(task_id) is False
         assert scheduler._in_flight[task_id] is task
+        assert scheduler._in_flight[task_id]["retries"] == 0
         assert scheduler._queue_reservations["default"] == 1
         assert scheduler.audit_records[-1]["action"] == "retry_deferred"
 

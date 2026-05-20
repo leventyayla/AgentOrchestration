@@ -142,17 +142,21 @@ class TaskScheduler:
     def fail(self, task_id: str, queue: str = "default") -> bool:
         task = self._in_flight.get(task_id)
         if task:
-            task["retries"] += 1
-            if task["retries"] < self._max_retries:
+            previous_retries = task.get("retries", 0)
+            next_retries = previous_retries + 1
+            if next_retries < self._max_retries:
+                task["retries"] = next_retries
                 try:
                     self.enqueue(task, queue, priority=task.get("priority", 0))
                 except Exception:
+                    task["retries"] = previous_retries
                     self._record_decision(
                         "retry_deferred", queue, task_id, "enqueue_transaction_failed"
                     )
                     return False
                 self._in_flight.pop(task_id, None)
                 return True
+            task["retries"] = next_retries
         return False
 
 # 2019-04-25T08:37:12 update
