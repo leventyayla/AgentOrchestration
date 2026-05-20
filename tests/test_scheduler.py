@@ -97,6 +97,22 @@ class TestTaskScheduler:
         assert task["id"] == task_id
         assert task["type"] == "scheduled"
 
+    def test_cancel_unknown_task_does_not_create_terminal_record(self):
+        assert not self.scheduler.cancel("missing-task")
+        assert self.scheduler.terminal_outcome("missing-task") is None
+
+    def test_dequeue_skips_stale_terminal_queue_entries(self):
+        import asyncio
+
+        stale_id = self.scheduler.enqueue({"type": "stale"})
+        valid_id = self.scheduler.enqueue({"type": "valid"})
+        assert self.scheduler.cancel(stale_id)
+
+        task = asyncio.run(self.scheduler.dequeue())
+        assert task is not None
+        assert task["id"] == valid_id
+        assert task["type"] == "valid"
+
 # 2019-01-09T19:07:03 update
 
 # 2019-02-18T12:30:02 update

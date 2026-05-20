@@ -115,8 +115,9 @@ class TaskScheduler:
             if tid not in self._terminal:
                 self._push_task(item["task"], item["queue"], item["priority"])
 
-        if queue in self._queues and len(self._queues[queue]) > 0:
-            task = self._queues[queue].pop()
+        queue_obj = self._queues.get(queue)
+        while queue_obj and len(queue_obj) > 0:
+            task = queue_obj.pop()
             if task and task["id"] not in self._terminal:
                 task["status"] = "running"
                 self._in_flight[task["id"]] = task
@@ -130,9 +131,21 @@ class TaskScheduler:
         return self._record_terminal(task_id, "completed", task)
 
     def cancel(self, task_id: str) -> bool:
+        if task_id in self._terminal:
+            return False
         task = self._in_flight.pop(task_id, None)
         scheduled = self._scheduled.pop(task_id, None)
         task = task or (scheduled or {}).get("task")
+        if task is None:
+            for queue_obj in self._queues.values():
+                for _, _, queued_task in queue_obj._queue:
+                    if queued_task.get("id") == task_id:
+                        task = queued_task
+                        break
+                if task is not None:
+                    break
+        if task is None:
+            return False
         return self._record_terminal(task_id, "cancelled", task)
 
     def fail(self, task_id: str, queue: str = "default") -> bool:
