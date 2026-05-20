@@ -1,10 +1,15 @@
 """Agent Runtime — Manages agent process lifecycle."""
 
+import json
+import logging
 import os
+import shutil
 import signal
 import subprocess
-import logging
+import tempfile
+import time
 from enum import Enum
+from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -18,8 +23,26 @@ class RuntimeState(Enum):
     CRASHED = "crashed"
 
 
+_TERMINAL_STATES = {RuntimeState.STOPPED, RuntimeState.CRASHED}
+
+
 class AgentRuntime:
-    def __init__(self):
+    """Run agents with durable state transitions and deterministic temp cleanup.
+
+    The runtime keeps durable lifecycle records separately from per-run temporary
+    files. State is written before process side effects are exposed, and every
+    terminal transition removes the temporary run directory exactly once. That
+    prevents retried stop/state probes from leaving stale temp files behind or
+    reporting a successful terminal state before cleanup has been attempted.
+    """
+
+    def __init__(self, runtime_path: Optional[str] = None):
+        base = Path(runtime_path or tempfile.mkdtemp(prefix="ao_runtime_"))
+        self.runtime_path = base
+        self.state_path = base / "state"
+        self.temp_path = base / "tmp"
+        self.state_path.mkdir(parents=True, exist_ok=True)
+        self.temp_path.mkdir(parents=True, exist_ok=True)
         self._processes: Dict[str, subprocess.Popen] = {}
         self._states: Dict[str, RuntimeState] = {}
 
@@ -28,11 +51,13 @@ class AgentRuntime:
             logger.warning(f"Agent {agent_id} is already running")
             return False
 
-        self._states[agent_id] = RuntimeState.STARTING
+        run_dir = self._prepare_temp_dir(agent_id)
+        self._transition(agent_id, RuntimeState.STARTING, temp_dir=run_dir)
         process_env = os.environ.copy()
         if env:
             process_env.update(env)
         process_env["AO_AGENT_ID"] = agent_id
+        process_env["AO_RUN_TEMP_DIR"] = str(run_dir)
 
         try:
             proc = subprocess.Popen(
@@ -42,20 +67,23 @@ class AgentRuntime:
                 stderr=subprocess.PIPE,
             )
             self._processes[agent_id] = proc
-            self._states[agent_id] = RuntimeState.RUNNING
+            self._transition(agent_id, RuntimeState.RUNNING, pid=proc.pid, temp_dir=run_dir)
             logger.info(f"Agent {agent_id} started (PID: {proc.pid})")
             return True
         except Exception as e:
-            self._states[agent_id] = RuntimeState.CRASHED
+            self._transition(agent_id, RuntimeState.CRASHED, error=str(e), temp_dir=run_dir)
+            self._cleanup_temp_dir(agent_id)
             logger.error(f"Failed to start agent {agent_id}: {e}")
             return False
 
     def stop(self, agent_id: str, timeout: int = 10) -> bool:
         proc = self._processes.get(agent_id)
         if not proc or proc.poll() is not None:
+            if self._states.get(agent_id) in _TERMINAL_STATES:
+                self._cleanup_temp_dir(agent_id)
             return False
 
-        self._states[agent_id] = RuntimeState.STOPPING
+        self._transition(agent_id, RuntimeState.STOPPING)
         proc.send_signal(signal.SIGTERM)
         try:
             proc.wait(timeout=timeout)
@@ -63,19 +91,55 @@ class AgentRuntime:
             proc.kill()
             proc.wait()
 
-        self._states[agent_id] = RuntimeState.STOPPED
+        self._transition(agent_id, RuntimeState.STOPPED, returncode=proc.returncode)
+        self._cleanup_temp_dir(agent_id)
         logger.info(f"Agent {agent_id} stopped")
         return True
 
     def get_state(self, agent_id: str) -> RuntimeState:
         proc = self._processes.get(agent_id)
-        if proc and proc.poll() is not None:
-            self._states[agent_id] = RuntimeState.CRASHED
+        if proc and proc.poll() is not None and self._states.get(agent_id) == RuntimeState.RUNNING:
+            self._transition(agent_id, RuntimeState.CRASHED, returncode=proc.returncode)
+            self._cleanup_temp_dir(agent_id)
         return self._states.get(agent_id, RuntimeState.STOPPED)
 
     def is_running(self, agent_id: str) -> bool:
         proc = self._processes.get(agent_id)
         return proc is not None and proc.poll() is None
+
+    def state_file(self, agent_id: str) -> Path:
+        return self.state_path / f"{agent_id}.json"
+
+    def temp_dir(self, agent_id: str) -> Path:
+        return self.temp_path / agent_id
+
+    def _prepare_temp_dir(self, agent_id: str) -> Path:
+        run_dir = self.temp_dir(agent_id)
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        run_dir.mkdir(parents=True)
+        return run_dir
+
+    def _transition(self, agent_id: str, state: RuntimeState, **details) -> None:
+        self._states[agent_id] = state
+        payload = {
+            "agent_id": agent_id,
+            "state": state.value,
+            "timestamp": time.time(),
+            "terminal": state in _TERMINAL_STATES,
+        }
+        if details:
+            payload.update({k: str(v) if isinstance(v, Path) else v for k, v in details.items()})
+
+        state_file = self.state_file(agent_id)
+        tmp_file = state_file.with_suffix(".json.tmp")
+        tmp_file.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        os.replace(tmp_file, state_file)
+
+    def _cleanup_temp_dir(self, agent_id: str) -> None:
+        run_dir = self.temp_dir(agent_id)
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
 
 # 2019-01-11T10:56:26 update
 
@@ -109,7 +173,7 @@ class AgentRuntime:
 
 # 2020-04-13T09:40:09 update
 
-# 2020-06-16T14:21:27 update
+# 2020-06-16T14:16:27 update
 
 # 2020-08-12T12:56:50 update
 
