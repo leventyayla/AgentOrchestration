@@ -1,10 +1,25 @@
 """CLI entry point for the agent orchestrator."""
 
 import argparse
+from pathlib import Path
 import sys
 
-from src.common.config import Config
 from src.common.logging import configure_logging
+
+
+def validate_manifest_path(manifest):
+    """Validate a deploy manifest path before any backend mutation occurs."""
+    manifest_path = Path(manifest)
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest file does not exist: {manifest}")
+    if not manifest_path.is_file():
+        raise ValueError(f"Manifest path is not a file: {manifest}")
+    return manifest_path
+
+
+def deploy_agent(manifest):
+    """Run the live deploy path after validation has succeeded."""
+    print(f"Deploying agent from manifest: {manifest}")
 
 
 def cli():
@@ -19,6 +34,11 @@ def cli():
 
     deploy_parser = subparsers.add_parser("deploy", help="Deploy an agent")
     deploy_parser.add_argument("manifest", help="Path to agent manifest file")
+    deploy_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the manifest without deploying or mutating backend state",
+    )
 
     status_parser = subparsers.add_parser("status", help="Show agent status")
     status_parser.add_argument("--watch", "-w", action="store_true", help="Watch mode")
@@ -37,7 +57,16 @@ def cli():
     if args.command == "init":
         print(f"Initializing project: {args.name}")
     elif args.command == "deploy":
-        print(f"Deploying agent from manifest: {args.manifest}")
+        try:
+            manifest_path = validate_manifest_path(args.manifest)
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(str(exc))
+
+        if args.dry_run:
+            print(f"Dry run successful: manifest is valid: {manifest_path}")
+            return
+
+        deploy_agent(str(manifest_path))
     elif args.command == "status":
         print("Checking agent status...")
     elif args.command == "logs":
