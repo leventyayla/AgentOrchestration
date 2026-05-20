@@ -1,4 +1,3 @@
-import pytest
 from src.agent.registry import AgentRegistry, AgentStatus
 
 
@@ -47,6 +46,49 @@ class TestAgentRegistry:
 
     def test_delete_nonexistent_agent(self):
         assert not self.registry.delete("nonexistent-id")
+
+    def test_cached_resolution_rechecks_after_permission_change(self):
+        agent_id = self.registry.register("test-agent", "worker.processor")
+        assert self.registry.set_authorization(
+            agent_id, "user-1", "runner", True
+        )
+
+        first = self.registry.resolve_authorized(agent_id, "user-1", "runner")
+        assert first is not None
+        assert first["id"] == agent_id
+
+        assert self.registry.set_authorization(
+            agent_id, "user-1", "runner", False
+        )
+
+        denied = self.registry.resolve_authorized(agent_id, "user-1", "runner")
+        assert denied is None
+        status_agent = self.registry.get(agent_id)
+        assert status_agent is not None
+        assert status_agent["status"] == AgentStatus.PENDING.value
+        assert any(
+            event["event"] in {"cache_invalidated", "resolution_denied"}
+            for event in self.registry.audit_log()
+        )
+
+    def test_current_policy_cache_omits_private_config_from_audit(self):
+        agent_id = self.registry.register(
+            "test-agent",
+            "worker.processor",
+            config={"secret": "do-not-log"},
+        )
+        assert self.registry.set_authorization(
+            agent_id, "user-1", "runner", True
+        )
+
+        first = self.registry.resolve_authorized(agent_id, "user-1", "runner")
+        second = self.registry.resolve_authorized(agent_id, "user-1", "runner")
+        assert first is not None
+        assert second is not None
+
+        audit_text = repr(self.registry.audit_log())
+        assert "cache_allowed" in audit_text
+        assert "do-not-log" not in audit_text
 
 # 2019-01-23T10:28:57 update
 
