@@ -2,7 +2,28 @@
 
 import functools
 import asyncio
+import re
 from typing import Any, Callable, Dict, Optional
+
+
+_SEMVER_PATTERN = re.compile(
+    r"^(0|[1-9]\d*)\."
+    r"(0|[1-9]\d*)\."
+    r"(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+
+
+def _validate_agent_version(version: str) -> str:
+    """Validate SDK agent metadata versions use SemVer 2.0.0 format."""
+    if not isinstance(version, str) or not _SEMVER_PATTERN.fullmatch(version):
+        raise ValueError(
+            "agent version must be a semantic version string like "
+            "'1.2.3', '1.2.3-alpha.1', or '1.2.3+build.5'"
+        )
+    return version
 
 
 def task(name: Optional[str] = None, retries: int = 0, timeout: int = 300):
@@ -31,10 +52,12 @@ def task(name: Optional[str] = None, retries: int = 0, timeout: int = 300):
 
 def agent(name: str, version: str = "1.0.0", description: str = ""):
     """Decorator for marking a class as an agent definition."""
+    validated_version = _validate_agent_version(version)
+
     def decorator(cls: type) -> type:
         cls.__agent_config__ = {
             "name": name,
-            "version": version,
+            "version": validated_version,
             "description": description,
         }
         return cls
